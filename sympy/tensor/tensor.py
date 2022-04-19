@@ -3238,6 +3238,10 @@ class TensMul(TensExpr, AssocOp):
     _index_structure = None  # type: _IndexStructure
 
     def __new__(cls, *args, **kw_args):
+
+        if args == ():
+            return cls.identity
+
         is_canon_bp = kw_args.get('is_canon_bp', False)
         args = list(map(_sympify, args))
 
