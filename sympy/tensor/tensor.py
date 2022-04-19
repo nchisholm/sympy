@@ -2048,11 +2048,15 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
 
     def __truediv__(self, other):
         other = _sympify(other)
-        return TensMul(self, tenspow(other, -S.One)).doit()
+        if not is_scalar(other):
+            raise ValueError('cannot divide by a non-scalar quantity')
+        return TensMul(self, S.One/other).doit()
 
     def __rtruediv__(self, other):
         other = _sympify(other)
-        return TensMul(tenspow(self, -S.One), other).doit()
+        if not self.rank == 0:
+            raise ValueError('cannot divide by a non-scalar quantity')
+        return TensMul(S.One/self, other).doit()
 
     def __pow__(self, other):
         return tenspow(self, other)
@@ -2060,9 +2064,8 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
     def __rpow__(self, other):
         return tenspow(other, self)
 
-    # Proposed TODO: rename "rank" to "order".  The "rank" of a tensor has
-    # unfortunate double meaning and may or may not be the same as the order if
-    # the tensor is rank deficient.  Example: x(i)*x(j) has order=2 but rank=1.
+    # Really should be called order?  You can have a rank 1 tensor that is
+    # second order, e.g., x(i) * x(j).  Analogous to a rank-deficient matrix.
     # https://en.wikipedia.org/wiki/Tensor_(intrinsic_definition)#Tensor_rank
     @property
     @abstractmethod
@@ -4425,6 +4428,9 @@ def _equals(lhs, rhs):
         return rhs.equals(lhs)
     return lhs == rhs
 
+# Really should be called order?  You can have a rank 1 tensor that is second
+# order, e.g., x(i) * x(j).  Analogous to a rank-deficient matrix.
+# See https://en.wikipedia.org/wiki/Tensor_(intrinsic_definition)#Tensor_rank
 def rank(expr):
     return expr.rank if isinstance(expr, TensExpr) else 0
 
@@ -4513,41 +4519,3 @@ def tenspow(base, exponent):
 
 
 from .tfactorize import split_sumfactors
-# Really should be called order?  You can have a rank 1 tensor that is second
-# order, e.g., x(i) * x(j).  Analogous to a rank-deficient matrix.
-# See https://en.wikipedia.org/wiki/Tensor_(intrinsic_definition)#Tensor_rank
-def rank(expr):
-    return expr.rank if isinstance(expr, TensExpr) else 0
-
-
-# FIXME potentially confusing with Expr.is_scalar property, which affects the
-# behavior of Derivative.
-def is_scalar(expr):
-    return rank(expr) == 0
-
-
-def tenspow(base, exponent):
-
-    if is_scalar(base) and is_scalar(exponent):
-        return Pow(base, exponent)
-
-    if isinstance(exponent, TensExpr):
-        raise NotImplementedError("Exponentiation by a tensorial quantity")
-
-    deprecate_data()
-    with ignore_warnings(SymPyDeprecationWarning):
-        if base.data is None:
-            raise ValueError("No non-scalar power without ndarray data.")
-        from .array import tensorproduct, tensorcontraction
-        free = base.free
-        marray = base.data
-        mdim = marray.rank()
-        for metric in free:
-            marray = tensorcontraction(
-                tensorproduct(
-                marray,
-                metric[0].tensor_index_type.data,
-                marray),
-                (0, mdim), (mdim+1, mdim+2)
-            )
-        return marray ** (exponent * S.Half)
