@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-from functools import reduce
-from operator import or_
+from sympy.core import Expr, S, sympify
+from functools import reduce, partial
+from operator import or_, and_
 
-from sympy.tensor.tensor import TensMul
+from sympy.tensor.tensor import TensExpr, Tensor, TensAdd, TensMul
 
 
-def merge_intersecting0(set0, others):
+def merge_intersecting1(set0, others):
     """
     Merge `set0` with `others` that intersect it and return the result.
     Disjoint sets are left alone and returned.
@@ -29,7 +30,7 @@ def merge_intersecting(sets):
 
     while len(sets) > 0:
         s = sets[0]
-        s1, sets = merge_intersecting0(s, sets[1:])
+        s1, sets = merge_intersecting1(s, sets[1:])
         sets_out.append(s1)
 
     return sets_out
@@ -79,7 +80,6 @@ def int2bits(val: int, length=None):
 # j: [1 0 0 0 0 0] =  1
 # k: [0 0 0 1 0 1] = 20
 # l: [0 1 0 0 1 0] = 10
-# --
 # \
 #  dummy
 #
@@ -94,6 +94,7 @@ def bitrange(m, n):
 
 
 def _factor_free(tensmul: TensMul):
+    assert isinstance(tensmul, TensMul)
 
     free_args = tuple(bits2int((icomp,))
                       for (_, _, icomp) in tensmul.free_in_args)
@@ -108,27 +109,40 @@ def _factor_free(tensmul: TensMul):
     i = 0
     while i < len(free_args):
         s_free = free_args[i]
-        s1_free, dummy_arg_pairs = merge_intersecting0(s_free, dummy_arg_pairs)
-        n_args_handled = int.bit_length(s1_free) - i
-        mask = bitrange(i, n_args_handled)
-        free_grp = s1_free
-        for _s in free_args[i+1:]:
-            free_grp |= _s & mask
+        s1_free, dummy_arg_pairs = merge_intersecting1(s_free, dummy_arg_pairs)
+        grp_size = int.bit_length(s1_free) - i
+        mask = bitrange(i, i + grp_size)
+        free_grp = reduce(or_, map(lambda s: s & mask, free_args[i+1:]), s1_free)
         free_grps.append(free_grp)
-        i += n_args_handled
+        i += grp_size
 
     return free_grps, dummy_arg_pairs
 
 
-def factor_outer(tensmul: TensMul):
+def factor_outer(expr: TensExpr):
+    if not isinstance(expr, TensExpr):
+        return (*sympify(expr).as_coeff_mul(), ())
+    if not isinstance(expr, TensMul):
+        if expr.rank == 0:
+            return (S.One, (expr,), ())
+        return (S.One, (), (expr,))
 
-    tensmul_nocoeff = tensmul.nocoeff
+    tensmul = expr
 
-    free_grps, dummy_arg_pairs = _factor_free(tensmul_nocoeff)
+    if isinstance(tensmul.nocoeff, Tensor):
+        if tensmul.rank == 0:
+            return (tensmul.coeff, (tensmul.nocoeff,), ())
+        return (tensmul.coeff, (), (tensmul.nocoeff,))
+    if isinstance(tensmul.nocoeff, TensAdd):
+        # Problematic for now; we need a way of to handle indices over multiple
+        # terms in a TensAdd object.
+        raise NotImplementedError()
+
+    free_grps, dummy_arg_pairs = _factor_free(tensmul.nocoeff)
     dummy_grps = merge_intersecting(dummy_arg_pairs)
 
     def int2tensmul(val: int):
-        args = tensmul_nocoeff.args
+        args = tensmul.nocoeff.args
         return TensMul.fromiter(args[i] for i in int2bits(val))
 
     return (tensmul.coeff,

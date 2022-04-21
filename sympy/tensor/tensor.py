@@ -3397,7 +3397,7 @@ class TensMul(TensExpr, AssocOp):
         args = [arg for arg in args if arg != self.identity]
 
         # Extract non-tensor coefficients:
-        coeff = reduce(lambda a, b: a*b, [arg for arg in args if not isinstance(arg, TensExpr)], S.One)
+        coeff = reduce(operator.mul, [arg for arg in args if not isinstance(arg, TensExpr)], S.One)
         args = [arg for arg in args if isinstance(arg, TensExpr)]
 
         if len(args) == 0:
@@ -4003,6 +4003,40 @@ class TensMul(TensExpr, AssocOp):
                 terms.append(TensMul.fromiter(self.args[:i] + (d,) + self.args[i + 1:]))
         return TensAdd.fromiter(terms)
 
+    def _eval_subs(self, old, new):
+
+        chain = itertools.chain
+        def chainsplit(exprs):
+            return chain.from_iterable(ex.split() for ex in exprs)
+
+        old = canon_bp(old)
+        queryargs = old.args if isinstance(old, TensMul) else (old,)
+
+        if not isinstance(old, TensMul):
+            return None
+
+        coeff, scalarfactors, tensorfactors = factor_outer(self)
+
+        # Canonicalize all terms to compare;
+        # scalar factors commute, so sort them.
+        args0 = (coeff,
+                 *chainsplit(ex.canon_bp() for ex in scalarfactors),
+                 *chainsplit(ex.canon_bp() for ex in tensorfactors))
+        args = []
+
+        while True:
+            try:
+                matchbegin = args0.index(queryargs[0])
+            except ValueError:
+                return TensMul(*args, *args0).doit()
+            matchend = matchbegin + len(queryargs)
+
+            if queryargs[1:] == args0[matchbegin+1 : matchend]:
+                args.extend(args0[:matchbegin])
+                args.append(new)
+
+            args0 = args0[matchend:]
+
 
 class TensorElement(TensExpr):
     """
@@ -4385,3 +4419,59 @@ def tenspow(base, exponent):
                 (0, mdim), (mdim+1, mdim+2)
             )
         return marray ** (exponent * S.Half)
+
+
+class ScalarTensMul(TensMul, Expr):
+    """
+    Represents a "minimal" set of fully contracted tensors.
+    """
+
+    # Don't override
+    _op_priority = Expr._op_priority - 1.0
+
+    is_commutative = True
+
+    @classmethod
+    def _cast_from_TensMul(cls, obj: TensMul):
+        obj.__class__ = cls
+        return obj
+
+    @property
+    def rank(self):
+        return 0
+
+    @property
+    def testprop(self):
+        print("I am a scalar!")
+
+
+def tensdiv(numer, denom):
+
+    coeff1, scalar_factors1, tensor_factors1 = factor_outer(numer)
+    coeff2, scalar_factors2, tensor_factors2 = factor_outer(denom)
+
+    if tensor_factors2 != ():
+            raise ValueError('cannot divide by a non-scalar quantity')
+
+    # canonicalize
+    scalar_factors1 = tuple(map(canon_bp, scalar_factors1))
+    scalar_factors2 = tuple(map(canon_bp, scalar_factors2))
+
+    # Replace scalars with dummy variables
+    scalar2dummy = {expr: Dummy() for expr in itertools.chain(scalar_factors1,
+                                                              scalar_factors2)}
+
+    def dummify(scalar_factor):
+        return scalar_factor.xreplace(scalar2dummy)
+
+    scalar_factors1 = tuple(map(dummify, scalar_factors1))
+    scalar_factors2 = tuple(map(dummify, scalar_factors2))
+
+    prefactor = Mul(coeff1, *scalar_factors1) / Mul(coeff2, *scalar_factors2)
+    prefactor.xreplace({dum: expr for (expr, dum) in scalar2dummy.items()})
+
+    return TensMul(prefactor, *tensor_factors1).doit()
+
+
+from sympy.core.symbol import Dummy
+from sympy.tensor.tfactorize import factor_outer
