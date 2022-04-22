@@ -96,27 +96,30 @@ def bitrange(m, n):
 def _factor_free(tensmul: TensMul):
     assert isinstance(tensmul, TensMul)
 
-    free_args = tuple(bits2int((icomp,))
+    free_bitmap = tuple(bits2int((icomp,))
                       for (_, _, icomp) in tensmul.free_in_args)
 
-    assert tuple(sorted(free_args)) == free_args
+    free_bitmap = merge_intersecting(free_bitmap)
 
-    dummy_arg_pairs = tuple(bits2int((icomp1, icomp2))
+    assert sorted(free_bitmap) == free_bitmap
+
+    dummy_bitmap = tuple(bits2int((icomp1, icomp2))
                             for (_, _, icomp1, icomp2) in tensmul.dum_in_args)
 
     free_grps = []
 
     i = 0
-    while i < len(free_args):
-        s_free = free_args[i]
-        s1_free, dummy_arg_pairs = merge_intersecting1(s_free, dummy_arg_pairs)
+    while i < len(free_bitmap):
+        s_free = free_bitmap[i]
+        s1_free, dummy_bitmap = merge_intersecting1(s_free, dummy_bitmap)
         grp_size = int.bit_length(s1_free) - i
+        assert grp_size >= 1
         mask = bitrange(i, i + grp_size)
-        free_grp = reduce(or_, map(lambda s: s & mask, free_args[i+1:]), s1_free)
+        free_grp = reduce(or_, map(lambda s: s & mask, free_bitmap[i+1:]), s1_free)
         free_grps.append(free_grp)
         i += grp_size
 
-    return free_grps, dummy_arg_pairs
+    return free_grps, dummy_bitmap
 
 
 def factor_outer(expr: TensExpr):
