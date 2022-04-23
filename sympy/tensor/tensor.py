@@ -1,10 +1,10 @@
 """
 This module defines tensors with abstract index notation.
 
-The abstract index notation was first formalized by Penrose.
+The abstract index notation has been first formalized by Penrose.
 
 Tensor indices are formal objects, with a tensor type; there is no
-notion of index range.  It is only possible to assign the dimension
+notion of index range, it is only possible to assign the dimension,
 used to trace the Kronecker delta; the dimension can be a Symbol.
 
 The Einstein summation convention is used.
@@ -13,16 +13,17 @@ The covariant indices are indicated with a minus sign in front of the index.
 For instance the tensor ``t = p(a)*A(b,c)*q(-c)`` has the index ``c``
 contracted.
 
-A tensor expression ``t`` can be called.  When called with its indices in sorted
-order, it is equal to itself; in the above example ``t(a, b) == t``.
-One can call ``t`` with different indices; ``t(c, d) == p(c)*A(d,a)*q(-a)``.
+A tensor expression ``t`` can be called; called with its
+indices in sorted order it is equal to itself:
+in the above example ``t(a, b) == t``;
+one can call ``t`` with different indices; ``t(c, d) == p(c)*A(d,a)*q(-a)``.
 
-The contracted indices are dummy indices.  Internally, they have no name
-and are represented by a graph-like structure.
+The contracted indices are dummy indices, internally they have no name,
+the indices being represented by a graph-like structure.
 
-Tensors are put in canonical form using ``canon_bp``, which uses the
-Butler-Portugal algorithm for canonicalization using the
-monoterm symmetries of the tensors (citation?).
+Tensors are put in canonical form using ``canon_bp``, which uses
+the Butler-Portugal algorithm for canonicalization using the monoterm
+symmetries of the tensors.
 
 If there is a (anti)symmetric metric, the indices can be raised and
 lowered when the tensor is put in canonical form.
@@ -1994,11 +1995,7 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
     """
 
     _op_priority = 12.0
-    # is_commutative = False
-
-    @property
-    def is_commutative(self):
-        return self.rank == 0
+    is_commutative = False
 
     def __neg__(self):
         return self*S.NegativeOne
@@ -2048,29 +2045,34 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
 
     def __truediv__(self, other):
         other = _sympify(other)
-        if not is_scalar(other):
-            raise ValueError('cannot divide by a non-scalar quantity')
+        if isinstance(other, TensExpr):
+            raise ValueError('cannot divide by a tensor')
         return TensMul(self, S.One/other).doit()
 
     def __rtruediv__(self, other):
-        other = _sympify(other)
-        if not self.rank == 0:
-            raise ValueError('cannot divide by a non-scalar quantity')
-        return TensMul(S.One/self, other).doit()
+        raise ValueError('cannot divide by a tensor')
 
     def __pow__(self, other):
-        return tenspow(self, other)
+        deprecate_data()
+        with ignore_warnings(SymPyDeprecationWarning):
+            if self.data is None:
+                raise ValueError("No power without ndarray data.")
+            from .array import tensorproduct, tensorcontraction
+            free = self.free
+            marray = self.data
+            mdim = marray.rank()
+            for metric in free:
+                marray = tensorcontraction(
+                    tensorproduct(
+                    marray,
+                    metric[0].tensor_index_type.data,
+                    marray),
+                    (0, mdim), (mdim+1, mdim+2)
+                )
+            return marray ** (other * S.Half)
 
     def __rpow__(self, other):
-        return tenspow(other, self)
-
-    # Really should be called order?  You can have a rank 1 tensor that is
-    # second order, e.g., x(i) * x(j).  Analogous to a rank-deficient matrix.
-    # https://en.wikipedia.org/wiki/Tensor_(intrinsic_definition)#Tensor_rank
-    @property
-    @abstractmethod
-    def rank(self):
-        raise NotImplementedError("abstract method")
+        raise NotImplementedError
 
     @property
     @abstractmethod
@@ -2762,7 +2764,7 @@ class Tensor(TensExpr):
 
     """
 
-    # is_commutative = False
+    is_commutative = False
 
     _index_structure = None  # type: _IndexStructure
     args: tuple[TensorHead, Tuple]
