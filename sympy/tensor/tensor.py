@@ -42,7 +42,7 @@ from sympy.core.numbers import (Integer, Rational)
 from sympy.combinatorics import Permutation
 from sympy.combinatorics.tensor_can import get_symmetric_group_sgs, \
     bsgs_direct_product, canonicalize, riemann_bsgs
-from sympy.core import Basic, Expr, sympify, Add, Mul, S, expand_mul
+from sympy.core import Basic, Expr, sympify, Add, Mul, S
 from sympy.core.assumptions import ManagedProperties
 from sympy.core.containers import Tuple, Dict
 from sympy.core.sorting import default_sort_key
@@ -2596,7 +2596,7 @@ class TensAdd(TensExpr, AssocOp):
         Canonicalize using the Butler-Portugal algorithm for canonicalization
         under monoterm symmetries.
         """
-        expr = expand_mul(self)
+        expr = self.expand()
         args = [canon_bp(x) for x in expr.args]
         res = TensAdd(*args).doit()
         return res
@@ -2917,7 +2917,7 @@ class Tensor(TensExpr):
     def canon_bp(self):
         if self.is_canon_bp:
             return self
-        expr = self
+        expr = self.expand()
         g, dummies, msym = expr._index_structure.indices_canon_args()
         v = components_canon_args([expr.component])
         can = canonicalize(g, dummies, msym, *v)
@@ -3699,7 +3699,7 @@ class TensMul(TensExpr, AssocOp):
         """
         if self._is_canon_bp:
             return self
-        expr = expand_mul(self)
+        expr = self.expand()
         if isinstance(expr, TensAdd):
             return expr.canon_bp()
         if not expr.components:
@@ -3760,7 +3760,7 @@ class TensMul(TensExpr, AssocOp):
         >>> t.contract_metric(g).canon_bp()
         p(L_0)*q(-L_0)
         """
-        expr = expand_mul(self)
+        expr = self.expand()
         if self != expr:
             expr = canon_bp(expr)
             return contract_metric(expr, g)
