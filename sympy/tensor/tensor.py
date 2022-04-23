@@ -1,10 +1,10 @@
 """
 This module defines tensors with abstract index notation.
 
-The abstract index notation was first formalized by Penrose.
+The abstract index notation has been first formalized by Penrose.
 
 Tensor indices are formal objects, with a tensor type; there is no
-notion of index range.  It is only possible to assign the dimension
+notion of index range, it is only possible to assign the dimension,
 used to trace the Kronecker delta; the dimension can be a Symbol.
 
 The Einstein summation convention is used.
@@ -13,16 +13,17 @@ The covariant indices are indicated with a minus sign in front of the index.
 For instance the tensor ``t = p(a)*A(b,c)*q(-c)`` has the index ``c``
 contracted.
 
-A tensor expression ``t`` can be called.  When called with its indices in sorted
-order, it is equal to itself; in the above example ``t(a, b) == t``.
-One can call ``t`` with different indices; ``t(c, d) == p(c)*A(d,a)*q(-a)``.
+A tensor expression ``t`` can be called; called with its
+indices in sorted order it is equal to itself:
+in the above example ``t(a, b) == t``;
+one can call ``t`` with different indices; ``t(c, d) == p(c)*A(d,a)*q(-a)``.
 
-The contracted indices are dummy indices.  Internally, they have no name
-and are represented by a graph-like structure.
+The contracted indices are dummy indices, internally they have no name,
+the indices being represented by a graph-like structure.
 
-Tensors are put in canonical form using ``canon_bp``, which uses the
-Butler-Portugal algorithm for canonicalization using the
-monoterm symmetries of the tensors (citation?).
+Tensors are put in canonical form using ``canon_bp``, which uses
+the Butler-Portugal algorithm for canonicalization using the monoterm
+symmetries of the tensors.
 
 If there is a (anti)symmetric metric, the indices can be raised and
 lowered when the tensor is put in canonical form.
@@ -37,7 +38,6 @@ from abc import abstractmethod, ABCMeta
 from collections import defaultdict
 import operator
 import itertools
-from sympy.core.power import Pow
 from sympy.core.numbers import (Integer, Rational)
 from sympy.combinatorics import Permutation
 from sympy.combinatorics.tensor_can import get_symmetric_group_sgs, \
@@ -1993,11 +1993,7 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
     """
 
     _op_priority = 12.0
-    # is_commutative = False
-
-    @property
-    def is_commutative(self):
-        return self.rank == 0
+    is_commutative = False
 
     def __neg__(self):
         return self*S.NegativeOne
@@ -2047,29 +2043,34 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
 
     def __truediv__(self, other):
         other = _sympify(other)
-        if not is_scalar(other):
-            raise ValueError('cannot divide by a non-scalar quantity')
+        if isinstance(other, TensExpr):
+            raise ValueError('cannot divide by a tensor')
         return TensMul(self, S.One/other).doit()
 
     def __rtruediv__(self, other):
-        other = _sympify(other)
-        if not self.rank == 0:
-            raise ValueError('cannot divide by a non-scalar quantity')
-        return TensMul(S.One/self, other).doit()
+        raise ValueError('cannot divide by a tensor')
 
     def __pow__(self, other):
-        return tenspow(self, other)
+        deprecate_data()
+        with ignore_warnings(SymPyDeprecationWarning):
+            if self.data is None:
+                raise ValueError("No power without ndarray data.")
+            from .array import tensorproduct, tensorcontraction
+            free = self.free
+            marray = self.data
+            mdim = marray.rank()
+            for metric in free:
+                marray = tensorcontraction(
+                    tensorproduct(
+                    marray,
+                    metric[0].tensor_index_type.data,
+                    marray),
+                    (0, mdim), (mdim+1, mdim+2)
+                )
+            return marray ** (other * S.Half)
 
     def __rpow__(self, other):
-        return tenspow(other, self)
-
-    # Really should be called order?  You can have a rank 1 tensor that is
-    # second order, e.g., x(i) * x(j).  Analogous to a rank-deficient matrix.
-    # https://en.wikipedia.org/wiki/Tensor_(intrinsic_definition)#Tensor_rank
-    @property
-    @abstractmethod
-    def rank(self):
-        raise NotImplementedError("abstract method")
+        raise NotImplementedError
 
     @property
     @abstractmethod
@@ -2761,7 +2762,7 @@ class Tensor(TensExpr):
 
     """
 
-    # is_commutative = False
+    is_commutative = False
 
     _index_structure = None  # type: _IndexStructure
     args: tuple[TensorHead, Tuple]
@@ -4381,97 +4382,5 @@ def _expand(expr, **kwargs):
     else:
         return expr.expand(**kwargs)
 
-# Really should be called order?  You can have a rank 1 tensor that is second
-# order, e.g., x(i) * x(j).  Analogous to a rank-deficient matrix.
-# See https://en.wikipedia.org/wiki/Tensor_(intrinsic_definition)#Tensor_rank
-def rank(expr):
-    return expr.rank if isinstance(expr, TensExpr) else 0
 
-
-# FIXME potentially confusing with Expr.is_scalar property, which affects the
-# behavior of Derivative.
-def is_scalar(expr):
-    return rank(expr) == 0
-
-
-def tenspow(base, exponent):
-
-    if is_scalar(base) and is_scalar(exponent):
-        return Pow(base, exponent)
-
-    if isinstance(exponent, TensExpr):
-        raise NotImplementedError("Exponentiation by a tensorial quantity")
-
-    deprecate_data()
-    with ignore_warnings(SymPyDeprecationWarning):
-        if base.data is None:
-            raise ValueError("No non-scalar power without ndarray data.")
-        from .array import tensorproduct, tensorcontraction
-        free = base.free
-        marray = base.data
-        mdim = marray.rank()
-        for metric in free:
-            marray = tensorcontraction(
-                tensorproduct(
-                marray,
-                metric[0].tensor_index_type.data,
-                marray),
-                (0, mdim), (mdim+1, mdim+2)
-            )
-        return marray ** (exponent * S.Half)
-
-
-class ScalarTensMul(TensMul, Expr):
-    """
-    Represents a "minimal" set of fully contracted tensors.
-    """
-
-    # Don't override
-    _op_priority = Expr._op_priority - 1.0
-
-    is_commutative = True
-
-    @classmethod
-    def _cast_from_TensMul(cls, obj: TensMul):
-        obj.__class__ = cls
-        return obj
-
-    @property
-    def rank(self):
-        return 0
-
-    @property
-    def testprop(self):
-        print("I am a scalar!")
-
-
-def tensdiv(numer, denom):
-
-    coeff1, scalar_factors1, tensor_factors1 = factor_outer(numer)
-    coeff2, scalar_factors2, tensor_factors2 = factor_outer(denom)
-
-    if tensor_factors2 != ():
-            raise ValueError('cannot divide by a non-scalar quantity')
-
-    # canonicalize
-    scalar_factors1 = tuple(map(canon_bp, scalar_factors1))
-    scalar_factors2 = tuple(map(canon_bp, scalar_factors2))
-
-    # Replace scalars with dummy variables
-    scalar2dummy = {expr: Dummy() for expr in itertools.chain(scalar_factors1,
-                                                              scalar_factors2)}
-
-    def dummify(scalar_factor):
-        return scalar_factor.xreplace(scalar2dummy)
-
-    scalar_factors1 = tuple(map(dummify, scalar_factors1))
-    scalar_factors2 = tuple(map(dummify, scalar_factors2))
-
-    prefactor = Mul(coeff1, *scalar_factors1) / Mul(coeff2, *scalar_factors2)
-    prefactor.xreplace({dum: expr for (expr, dum) in scalar2dummy.items()})
-
-    return TensMul(prefactor, *tensor_factors1).doit()
-
-
-from sympy.core.symbol import Dummy
 from sympy.tensor.tfactorize import factor_outer
