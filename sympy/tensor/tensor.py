@@ -3105,6 +3105,50 @@ class Tensor(TensExpr):
 
         return _get_compar_comp(self) == _get_compar_comp(other)
 
+    def similar(self, other, free_indices=None):
+        # Check if two TensMuls are similar in that they
+        # - Have the same compoments in the same order
+        # - Have the same contraction structure of the dummy indices
+        # - Have selected free indices in the same slots
+        if free_indices == None:
+            free_indices = set()
+        else:
+            if not free_indices <= self.free_indices:
+                invalid_inds = free_indices - self.free_indices
+                msg = "%s does not contain indices %s" % (self, invalid_inds)
+                raise ValueError(msg)
+            free_indices = set()
+        return self.canon_bp()._similar(other.canon_bp(), free_indices)
+
+    def _similar(self, other, free_indices):
+        # Check if two Tensors are similar in that they
+        #   - Have the same components
+        #   - Have the same contraction structure
+        #   - Have upper and lower free indices in the same slots
+        #   - Have free indices with the same label if present in `free_indices`
+        #
+        # Should be equivalent to self.equal(other) if self.free_indies ==
+        # free_indices.
+
+        return (isinstance(other, type(self)) and
+                self.coeff == other.coeff and
+                self.components == other.components and
+                self.dum == other.dum and
+                self._similar_free(other, free_indices))
+
+    def _similar_free(self, other, free_indices):
+        if not self.rank == other.rank:
+            return False
+        for (ind, ipos) in self.free:
+            ind1 = other.indices[ipos]
+            # TODO: maybe should ignore up/down status of ind in checking
+            # membership of free_indices?
+            if ind in free_indices and ind != ind1:
+                return False
+            if ind.is_up != ind1.is_up:
+                return False
+        return True
+
     def contract_metric(self, g):
         # if metric is not the same, ignore this step:
         if self.component != g:
@@ -3490,6 +3534,21 @@ class TensMul(TensExpr, AssocOp):
     def nocoeff(self):
         return self.func(*[t for t in self.args if isinstance(t, TensExpr)]).doit()
 
+    def _args_nocoeff(self):
+        return (t for t in self.args if isinstance(t, TensExpr))
+
+    @property
+    def indices(self):
+        indices = []
+        for t in self._args_nocoeff():
+            # TODO: make things work with TensAdd
+            if isinstance(t, TensAdd):
+                msg = ("Finding indices of expressions containing TensAdd "
+                       "objects not yet supported. Perhaps expand the expression.")
+                raise NotImplementedError(msg)
+            indices.extend(t.indices)
+        return tuple(indices)
+
     @property
     def dum_in_args(self):
         arg_offset = self._get_position_offset_for_indices()
@@ -3505,6 +3564,15 @@ class TensMul(TensExpr, AssocOp):
             return self.coeff == other
 
         return self.canon_bp() == other.canon_bp()
+
+    # The methods below are hijacked from Tensor rather than put in the
+    # superclass TensExpr because TensAdd does not define some attributes and
+    # methods that Tensor and TensMul do, e.g., t.free and t.dum.
+    #
+    # Should TensMul be a subclass of Tensor?
+    similar = Tensor.similar
+    _similar = Tensor._similar
+    _similar_free = Tensor._similar_free
 
     def get_indices(self):
         """
@@ -3593,6 +3661,7 @@ class TensMul(TensExpr, AssocOp):
             return [self]
         splitp = []
         res = 1
+        # FIXME: args that are TensAdd instances are omitted
         for arg in self.args:
             if isinstance(arg, Tensor):
                 splitp.append(res*arg)
@@ -4016,10 +4085,10 @@ class TensMul(TensExpr, AssocOp):
         if not isinstance(old, TensMul):
             return None
 
-        coeff, scalarfactors, tensorfactors = factor_outer(self)
+        coeff, scalarfactors, tensorfactors = scalar_tensor_sums(self)
 
         # Canonicalize all terms to compare;
-        # scalar factors commute, so sort them.
+        # TODO: scalar factors commute, so sort them.
         args0 = (coeff,
                  *chainsplit(ex.canon_bp() for ex in scalarfactors),
                  *chainsplit(ex.canon_bp() for ex in tensorfactors))
@@ -4383,4 +4452,4 @@ def _expand(expr, **kwargs):
         return expr.expand(**kwargs)
 
 
-from sympy.tensor.tfactorize import factor_outer
+from sympy.tensor.tfactorize import scalar_tensor_sums
