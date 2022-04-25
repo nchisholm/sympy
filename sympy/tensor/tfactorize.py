@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 
-from sympy.core import S
+from sympy.core import Expr, Mul
+from .tensor import TensMul
 
-from sympy.tensor.tensor import TensExpr, TensAdd, TensMul
 
+def _split_sumfactors(expr):
 
-def _split_sums(expr: TensMul):
+    if not isinstance(expr, TensMul):
+        return (expr,)
 
     # This internal function expects a TensMul object with the coefficent
     # stripped
     assert expr.coeff is TensMul.identity
-
-    if isinstance(expr, TensAdd):
-        # Problematic for now; we need a way of to handle indices over multiple
-        # terms in a TensAdd object.
-        raise NotImplementedError()
 
     icomps_free = tuple(set((icomp,))
                        for (_, _, icomp) in expr.free_in_args)
@@ -30,22 +27,16 @@ def _split_sums(expr: TensMul):
 
     return tuple(map(tensmul_from_iargs, icomp_sets))
 
-def split_sums(expr):
-    if not isinstance(expr, TensMul):
-        return (expr,)
-    coeff = expr.coeff
-    nocoeff = expr.nocoeff
-    return (*(() if coeff is S.One else (coeff,)),
-            *_split_sums(nocoeff))
 
-def scalar_tensor_sums(expr):
-    if not isinstance(expr, TensExpr):
-        return (expr, (), ())
-    coeff = expr.coeff
-    nocoeff = expr.nocoeff
-    factors = _split_sums(nocoeff)
-    scalars, tensors = partition(lambda ex: ex.rank == 0, factors)
-    return (coeff, tuple(scalars), tuple(tensors))
+def split_sumfactors(expr: Expr):
+    if isinstance(expr, Mul):
+        return tuple(expr.as_ordered_factors())
+    if isinstance(expr, TensMul):
+        ident = expr.identity
+        coeff = expr.coeff
+        prefactors = () if coeff is ident else tuple(coeff.as_ordered_factors())
+        return (*prefactors, *_split_sumfactors(expr.nocoeff))
+    return (expr,)
 
 
 def merge_intersecting(sets):
