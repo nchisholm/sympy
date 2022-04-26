@@ -1,10 +1,10 @@
 """
 This module defines tensors with abstract index notation.
 
-The abstract index notation has been first formalized by Penrose.
+The abstract index notation was first formalized by Penrose.
 
 Tensor indices are formal objects, with a tensor type; there is no
-notion of index range, it is only possible to assign the dimension,
+notion of index range.  It is only possible to assign the dimension
 used to trace the Kronecker delta; the dimension can be a Symbol.
 
 The Einstein summation convention is used.
@@ -13,17 +13,16 @@ The covariant indices are indicated with a minus sign in front of the index.
 For instance the tensor ``t = p(a)*A(b,c)*q(-c)`` has the index ``c``
 contracted.
 
-A tensor expression ``t`` can be called; called with its
-indices in sorted order it is equal to itself:
-in the above example ``t(a, b) == t``;
-one can call ``t`` with different indices; ``t(c, d) == p(c)*A(d,a)*q(-a)``.
+A tensor expression ``t`` can be called.  When called with its indices in sorted
+order, it is equal to itself; in the above example ``t(a, b) == t``.
+One can call ``t`` with different indices; ``t(c, d) == p(c)*A(d,a)*q(-a)``.
 
-The contracted indices are dummy indices, internally they have no name,
-the indices being represented by a graph-like structure.
+The contracted indices are dummy indices.  Internally, they have no name
+and are represented by a graph-like structure.
 
-Tensors are put in canonical form using ``canon_bp``, which uses
-the Butler-Portugal algorithm for canonicalization using the monoterm
-symmetries of the tensors.
+Tensors are put in canonical form using ``canon_bp``, which uses the
+Butler-Portugal algorithm for canonicalization using the
+monoterm symmetries of the tensors (citation?).
 
 If there is a (anti)symmetric metric, the indices can be raised and
 lowered when the tensor is put in canonical form.
@@ -1995,7 +1994,11 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
     """
 
     _op_priority = 12.0
-    is_commutative = False
+    # is_commutative = False
+
+    @property
+    def is_commutative(self):
+        return self.rank == 0
 
     def __neg__(self):
         return self*S.NegativeOne
@@ -2045,34 +2048,26 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
 
     def __truediv__(self, other):
         other = _sympify(other)
-        if isinstance(other, TensExpr):
-            raise ValueError('cannot divide by a tensor')
-        return TensMul(self, S.One/other).doit()
+        return TensMul(self, tenspow(other, -S.One)).doit()
 
     def __rtruediv__(self, other):
-        raise ValueError('cannot divide by a tensor')
+        other = _sympify(other)
+        return TensMul(tenspow(self, -S.One), other).doit()
 
     def __pow__(self, other):
-        deprecate_data()
-        with ignore_warnings(SymPyDeprecationWarning):
-            if self.data is None:
-                raise ValueError("No power without ndarray data.")
-            from .array import tensorproduct, tensorcontraction
-            free = self.free
-            marray = self.data
-            mdim = marray.rank()
-            for metric in free:
-                marray = tensorcontraction(
-                    tensorproduct(
-                    marray,
-                    metric[0].tensor_index_type.data,
-                    marray),
-                    (0, mdim), (mdim+1, mdim+2)
-                )
-            return marray ** (other * S.Half)
+        return tenspow(self, other)
 
     def __rpow__(self, other):
-        raise NotImplementedError
+        return tenspow(other, self)
+
+    # Proposed TODO: rename "rank" to "order".  The "rank" of a tensor has
+    # unfortunate double meaning and may or may not be the same as the order if
+    # the tensor is rank deficient.  Example: x(i)*x(j) has order=2 but rank=1.
+    # https://en.wikipedia.org/wiki/Tensor_(intrinsic_definition)#Tensor_rank
+    @property
+    @abstractmethod
+    def rank(self):
+        raise NotImplementedError("abstract method")
 
     @property
     @abstractmethod
@@ -2764,7 +2759,7 @@ class Tensor(TensExpr):
 
     """
 
-    is_commutative = False
+    # is_commutative = False
 
     _index_structure = None  # type: _IndexStructure
     args: tuple[TensorHead, Tuple]
@@ -4429,6 +4424,92 @@ def _equals(lhs, rhs):
     if isinstance(rhs, TensExpr):
         return rhs.equals(lhs)
     return lhs == rhs
+
+def rank(expr):
+    return expr.rank if isinstance(expr, TensExpr) else 0
+
+# FIXME: could be confused with the unrelated Expr.is_scalar property, which
+# affects the behavior of Derivative.
+def isscalar(expr):
+    return rank(expr) == 0
+
+def tenspow(base, exponent):
+
+    if isscalar(base) and isscalar(exponent):
+        return Pow(canon_bp(base), canon_bp(exponent))
+
+    if rank(exponent) > 0:
+        raise NotImplementedError("Exponentiation by a non-scalar TensExpr")
+
+    deprecate_data()
+    with ignore_warnings(SymPyDeprecationWarning):
+        if base.data is None:
+            raise ValueError("No non-scalar power without ndarray data.")
+        from .array import tensorproduct, tensorcontraction
+        free = base.free
+        marray = base.data
+        mdim = marray.rank()
+        for metric in free:
+            marray = tensorcontraction(
+                tensorproduct(
+                marray,
+                metric[0].tensor_index_type.data,
+                marray),
+                (0, mdim), (mdim+1, mdim+2)
+            )
+        return marray ** (exponent * S.Half)
+
+
+# def cancel_scalars(tensmul: TensMul):
+#
+#     coeffs, scalars, tensors = scalar_tensor_sums(tensmul)
+#
+#     # Look through coeffs for subexpressions containing `Pow`s of scalars and
+#     # cancel them
+#
+#     coeffs1 = []
+#     scalars1 = list(scalars)
+#     for coeff in coeffs:
+#         base, exp = coeff.as_base_exp()
+#         if not isinstance(base, TensExpr):
+#             coeffs1.append(coeff)
+#             continue
+#         base = base.canon_bp()
+#         for s in scalars:
+#             if base.equals(s):
+#                 exp -= S.One
+#                 scalars1.remove(s)
+#
+#
+#
+#     # cancel common factors
+#     scalar_factors = []
+#     for s_num, s_den in zip(scalars_num, scalars_den):
+#         base_num, exp_num = s_num.as_base_exp()
+#         base_den, exp_den = s_den.as_base_exp()
+#         if base_num.equals(base_den):
+#             scalar_factors.append(Pow(base_num, exp_num - exp_den))
+#         else:
+#             scalar_factors.append()
+#
+#     # canonicalize
+#     scalar_factors1 = tuple(map(canon_bp, scalar_factors1))
+#     scalar_factors2 = tuple(map(canon_bp, scalar_factors2))
+#
+#     # Replace scalars with dummy variables
+#     scalar2dummy = {expr: Dummy() for expr in itertools.chain(scalar_factors1,
+#                                                               scalar_factors2)}
+#
+#     def dummify(scalar_factor):
+#         return scalar_factor.xreplace(scalar2dummy)
+#
+#     scalar_factors1 = tuple(map(dummify, scalar_factors1))
+#     scalar_factors2 = tuple(map(dummify, scalar_factors2))
+#
+#     prefactor = Mul(coeff1, *scalar_factors1) / Mul(coeff2, *scalar_factors2)
+#     prefactor.xreplace({dum: expr for (expr, dum) in scalar2dummy.items()})
+#
+#     return TensMul(prefactor, *tensor_factors1).doit()
 
 
 from .tfactorize import split_sumfactors
