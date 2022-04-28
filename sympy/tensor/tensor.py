@@ -55,6 +55,7 @@ from sympy.utilities.exceptions import (sympy_deprecation_warning,
                                         SymPyDeprecationWarning,
                                         ignore_warnings)
 from sympy.utilities.decorator import memoize_property, deprecated
+from .tutil import partition
 
 
 def deprecate_data():
@@ -2440,7 +2441,7 @@ class TensAdd(TensExpr, AssocOp):
 
     @property
     def coeff(self):
-        return S.One
+        return TensMul.identity
 
     @property
     def nocoeff(self):
@@ -2774,7 +2775,6 @@ class Tensor(TensExpr):
         obj._free = obj._index_structure.free[:]
         obj._dum = obj._index_structure.dum[:]
         obj._ext_rank = obj._index_structure._ext_rank
-        obj._coeff = S.One
         obj._nocoeff = obj
         obj._component = tensor_head
         obj._components = [tensor_head]
@@ -2798,7 +2798,7 @@ class Tensor(TensExpr):
 
     @property
     def coeff(self):
-        return self._coeff
+        return TensMul.identity  # == S.One
 
     @property
     def nocoeff(self):
@@ -3245,18 +3245,43 @@ class TensMul(TensExpr, AssocOp):
             return cls.identity
 
         is_canon_bp = kw_args.get('is_canon_bp', False)
-        args = list(map(_sympify, args))
+        args = tuple(map(_sympify, args))
 
-        # Flatten:
-        args = [i for arg in args for i in (arg.args if isinstance(arg, (TensMul, Mul)) else [arg])]
+        tensexprs, otherexprs = partition(lambda arg: isinstance(arg, TensExpr),
+                                          args)
+        num_prefactor, var_coeffs = Mul(*otherexprs).as_coeff_mul()
 
-        args, indices, free, dum = TensMul._tensMul_contract_indices(args, replace_indices=False)
+        if num_prefactor is S.Zero:
+            return S.Zero
+
+        coeff_args = (
+            var_coeffs                    if num_prefactor is cls.identity else
+            (num_prefactor, *var_coeffs)  # otherwise
+        )
+
+        if len(tensexprs) == 0:
+            return Mul._from_args(coeff_args)  # should be safe here, I think
+        if len(coeff_args) == 0 and len(tensexprs) == 1:
+            return tensexprs[0]
+
+        # Flatten `TensMul`s
+        tensor_args = tuple(
+            t for tensexpr in tensexprs
+                for t in (tensexpr.args if isinstance(tensexpr, cls) else
+                          (tensexpr,))
+        )
+
+        assert len(coeff_args) + len(tensor_args) >= 2
+
+        tensor_args, indices, free, dum = \
+            cls._tensMul_contract_indices(tensor_args, replace_indices=False)
 
         # Data for indices:
         index_types = [i.tensor_index_type for i in indices]
-        index_structure = _IndexStructure(free, dum, index_types, indices, canon_bp=is_canon_bp)
+        index_structure = _IndexStructure(free, dum, index_types, indices,
+                                          canon_bp=is_canon_bp)
 
-        obj = TensExpr.__new__(cls, *args)
+        obj = TensExpr.__new__(cls, *coeff_args, *tensor_args)
         obj._indices = indices
         obj._index_types = index_types[:]
         obj._index_structure = index_structure
@@ -3264,9 +3289,11 @@ class TensMul(TensExpr, AssocOp):
         obj._dum = index_structure.dum[:]
         obj._free_indices = {x[0] for x in obj.free}
         obj._rank = len(obj.free)
-        obj._ext_rank = len(obj._index_structure.free) + 2*len(obj._index_structure.dum)
-        obj._coeff = S.One
+        obj._ext_rank = (len(obj._index_structure.free)
+                         + 2*len(obj._index_structure.dum))
+        obj._nleadcoeffs = len(coeff_args)
         obj._is_canon_bp = is_canon_bp
+
         return obj
 
     index_types = property(lambda self: self._index_types)
@@ -3392,29 +3419,10 @@ class TensMul(TensExpr, AssocOp):
     def doit(self, **hints):
         is_canon_bp = self._is_canon_bp
         deep = hints.get('deep', True)
-        if deep:
-            args = [arg.doit(**hints) for arg in self.args]
-        else:
-            args = self.args
-
-        args = [arg for arg in args if arg != self.identity]
-
-        # Extract non-tensor coefficients:
-        coeff = reduce(operator.mul,
-                       [arg for arg in args if not isinstance(arg, TensExpr)],
-                       self.identity)
-        args = [arg for arg in args if isinstance(arg, TensExpr)]
-
-        if len(args) == 0:
-            return coeff
-
-        if coeff != self.identity:
-            args = [coeff] + args
-        if coeff == 0:
-            return S.Zero
-
-        if len(args) == 1:
-            return args[0]
+        args = (
+            tuple(arg.doit(**hints) for arg in self.args) if deep else
+            self.args
+        )
 
         args, indices, free, dum = TensMul._tensMul_contract_indices(args)
 
@@ -3426,8 +3434,8 @@ class TensMul(TensExpr, AssocOp):
         obj._index_types = index_types
         obj._index_structure = index_structure
         obj._ext_rank = len(obj._index_structure.free) + 2*len(obj._index_structure.dum)
-        obj._coeff = coeff
         obj._is_canon_bp = is_canon_bp
+
         return obj
 
     # TODO: this method should be private
@@ -3487,12 +3495,13 @@ class TensMul(TensExpr, AssocOp):
 
     @property
     def coeff(self):
-        # return Mul.fromiter([c for c in self.args if not isinstance(c, TensExpr)])
-        return self._coeff
+        # TODO: use Mul._from_args, if safe
+        return Mul(*self.args[:self._nleadcoeffs])
 
     @property
     def nocoeff(self):
-        return self.func(*[t for t in self.args if isinstance(t, TensExpr)]).doit()
+        # TODO: use self._from_args, if safe
+        return self.func(*self.args[self._nleadcoeffs:])
 
     def _args_nocoeff(self):
         return (t for t in self.args if isinstance(t, TensExpr))
