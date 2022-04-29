@@ -2091,6 +2091,10 @@ class TensExpr(Expr, metaclass=_TensorMetaclass):
     def _replace_indices(self, repl: dict[TensorIndex, TensorIndex]) -> TensExpr:
         raise NotImplementedError("abstract method")
 
+    @abstractmethod
+    def _eval_partial_derivative(self, v):
+        raise NotImplementedError("abstract method")
+
     def fun_eval(self, *index_tuples):
         deprecate_fun_eval()
         return self.substitute_indices(*index_tuples)
@@ -2711,22 +2715,13 @@ class TensAdd(TensExpr, AssocOp):
         return Add.fromiter(args)
 
     def _eval_partial_derivative(self, s):
-        # Evaluation like Add
-        list_addends = []
-        for a in self.args:
-            if isinstance(a, TensExpr):
-                list_addends.append(a._eval_partial_derivative(s))
-            # do not call diff if s is no symbol
-            elif s._diff_wrt:
-                list_addends.append(a._eval_derivative(s))
-
-        return self.func(*list_addends)
+        addends = (_eval_partial_derivative(arg, s) for arg in self.args)
+        return self.func.fromiter(addends)
 
 
 class Tensor(TensExpr):
     """
-    Base tensor class, i.e. this represents a tensor, the single unit to be
-    put into an expression.
+    Represents a tensor, the single unit from which `TensExpr`s are constructed.
 
     Explanation
     ===========
@@ -3997,21 +3992,13 @@ class TensMul(TensExpr, AssocOp):
         return self._check_add_Sum(expr, index_symbols)
 
     def _eval_partial_derivative(self, s):
-        # Evaluation like Mul
+        # Evaluation like Mul - the product rule
         terms = []
         for i, arg in enumerate(self.args):
-            # checking whether some tensor instance is differentiated
-            # or some other thing is necessary, but ugly
-            if isinstance(arg, TensExpr):
-                d = arg._eval_partial_derivative(s)
-            else:
-                # do not call diff is s is no symbol
-                if s._diff_wrt:
-                    d = arg._eval_derivative(s)
-                else:
-                    d = S.Zero
-            if d:
-                terms.append(TensMul.fromiter(self.args[:i] + (d,) + self.args[i + 1:]))
+            d = _eval_partial_derivative(arg, s)
+            if d:  # Not zero
+                term = TensMul.fromiter(self.args[:i] + (d,) + self.args[i+1:])
+                terms.append(term)
         return TensAdd.fromiter(terms)
 
     def _eval_subs(self, old, new: Expr):
@@ -4516,3 +4503,5 @@ def tenspow(base, exponent):
 
 
 from .tfactorize import split_sumfactors
+from .tutil import partition
+from .toperators import _eval_partial_derivative

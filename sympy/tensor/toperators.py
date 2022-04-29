@@ -1,9 +1,15 @@
+from itertools import starmap
 from sympy import permutedims
+from sympy.core import Expr
+from sympy.core.symbol import Dummy
+from sympy.core.sympify import _sympify
 from sympy.core.numbers import Number
 from sympy.core.singleton import S
 from sympy.core.symbol import Symbol
 from sympy.core.sympify import sympify
-from sympy.tensor.tensor import Tensor, TensExpr, TensAdd, TensMul
+from sympy.tensor.array.dense_ndim_array import MutableDenseNDimArray
+from sympy.tensor.tensor import Tensor, TensExpr, TensAdd, TensMul, TensorIndex
+from .tutil import replace_topdown
 
 
 class PartialDerivative(TensExpr):
@@ -95,10 +101,28 @@ class PartialDerivative(TensExpr):
 
     def __new__(cls, expr, *variables):
 
+        expr = _sympify(expr)
+        variables = tuple(_sympify(v) for v in variables)
+
+        if not isinstance(expr, (TensExpr, Expr)):
+            ValueError("Cannot differentiate %s" % repr(expr))
+
+        # Make sure we can take a partial derivative WRT each of the variables
+        for v in variables:
+            if isinstance(v, Tensor) or v._diff_wrt:
+                continue
+            msg = ("Cannot take partial derivative with respect to %s" % v)
+            raise ValueError(msg)
+
+
         # Flatten:
         if isinstance(expr, PartialDerivative):
             variables = expr.variables + variables
             expr = expr.expr
+
+        # No-op
+        if len(variables) == 0:
+            return expr
 
         args, indices, free, dum = cls._contract_indices_for_derivative(
             S(expr), variables)
@@ -108,6 +132,7 @@ class PartialDerivative(TensExpr):
         obj._indices = indices
         obj._free = free
         obj._dum = dum
+
         return obj
 
     @property
@@ -117,6 +142,20 @@ class PartialDerivative(TensExpr):
     @property
     def nocoeff(self):
         return self
+
+    @property
+    def expr(self):
+        return self.args[0]
+
+    # NOTE: first element of self.variables is the *innermost* partial
+    # derivative (taken first).
+    @property
+    def variables(self):
+        return self.args[1:]
+
+    @property
+    def rank(self):
+        return len(self._free)
 
     @classmethod
     def _contract_indices_for_derivative(cls, expr, variables):
@@ -141,18 +180,9 @@ class PartialDerivative(TensExpr):
 
         return args, indices, free, dum
 
-    def doit(self, **hints):
-        args, indices, free, dum = self._contract_indices_for_derivative(self.expr, self.variables)
-
-        obj = self.func(*args)
-        obj._indices = indices
-        obj._free = free
-        obj._dum = dum
-
-        return obj
-
     def _expand_partial_derivative(self):
-        args, indices, free, dum = self._contract_indices_for_derivative(self.expr, self.variables)
+        args, indices, free, dum = self._contract_indices_for_derivative(
+            self.expr, self.variables)
 
         obj = self.func(*args)
         obj._indices = indices
@@ -195,17 +225,22 @@ class PartialDerivative(TensExpr):
 
         return result
 
+    def doit(self):
+        return self._perform_derivative()
+
     def _perform_derivative(self):
+        # Perform iterated differentiation WRT each of the variables
         result = self.expr
         for v in self.variables:
-            if isinstance(result, TensExpr):
-                result = result._eval_partial_derivative(v)
-            else:
-                if v._diff_wrt:
-                    result = result._eval_derivative(v)
-                else:
-                    result = S.Zero
+            result = _eval_partial_derivative(result, v)
         return result
+
+    def _eval_partial_derivative(self, v):
+        v0, *vs = self.variables
+        if v0 is v:
+            dexpr_dv = self._eval_partial_derivative(v)
+            return self.func(dexpr_dv, *vs)
+        raise NotImplementedError("Cannot assume Clairut's theorem holds")
 
     def get_indices(self):
         return self._indices
@@ -219,14 +254,6 @@ class PartialDerivative(TensExpr):
         mirrored = {-k: -v for k, v in repl.items()}
         variables = [i.xreplace(mirrored) for i in self.variables]
         return self.func(expr, *variables)
-
-    @property
-    def expr(self):
-        return self.args[0]
-
-    @property
-    def variables(self):
-        return self.args[1:]
 
     def _extract_data(self, replacement_dict):
         from .array import derive_by_array, tensorcontraction
@@ -254,3 +281,56 @@ class PartialDerivative(TensExpr):
             else:
                 indices.append(varindex)
         return indices, array
+
+
+# TODO: remove, should be handled by using PartialDerivative.doit() now.
+def perform_derivatives(expr):
+    from sympy.core import Derivative
+
+    "Evaluate (partial) derivatives in an expression (shallow)."
+    if expr.args == ():
+        return expr
+    if isinstance(expr, PartialDerivative):
+        return expr._perform_derivative()
+    if isinstance(expr, Derivative):
+        return expr.doit()
+    return expr.func(*map(perform_derivatives, expr.args))
+
+
+def _eval_partial_derivative(expr, x):
+    # "Dispatch" on whether some tensor instance is being differentiated or some
+    # other (scalar) expression.  We assume it makes sense to differentate with
+    # respect to x and do not check otherwise.
+    if isinstance(expr, TensExpr):
+        return expr._eval_partial_derivative(x)
+    if isinstance(x, TensExpr):
+        if isinstance(x, Tensor):
+            if expr.args == ():
+                # expr and x cannot be the same b/c they have differnt types
+                return S.Zero
+            return _chaindiff(expr, x)
+        raise ValueError("Cannot differentiate with respect to expression %s"
+                         % repr(x))
+    return expr._eval_derivative(x)  # left with ordinary, non-tensor symbols
+
+
+def _chaindiff(expr, x):
+    # Multivariate chain rule on `Expr`s that contain (zero-order) `TensExpr`s
+
+    # Using replace(TensExpr, lambda *args: Dummy()) doesn't work how we want
+    # because it replaces from bottom (leaves) to top of the expression tree---
+    # we want top to bottom.
+    (expr_dumb, dummies) = replace_topdown(
+        lambda e: Dummy() if isinstance(e, TensExpr) else None,
+        expr
+    )
+
+    def expand_term(dummy_var, tens_expr):
+        # [@F(..., uᵢ, ...)/@uᵢ]_{uᵢ = ϕᵢ(𝐱)} * @ϕᵢ(𝐱)/@xₖ
+        deriv_dummy = _eval_partial_derivative(expr_dumb, dummy_var)
+        partial_deriv = tens_expr._eval_partial_derivative(x)
+        return TensMul(deriv_dummy, partial_deriv).doit(deep=False)
+
+    terms = starmap(expand_term, dummies.items())
+
+    return TensAdd.fromiter(terms).doit(deep=False).xreplace(dummies)
