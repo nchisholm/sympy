@@ -3287,6 +3287,7 @@ class TensMul(TensExpr, AssocOp):
         return obj
 
     index_types = property(lambda self: self._index_types)
+    indices = property(lambda self: self._indices)
     free = property(lambda self: self._free)
     dum = property(lambda self: self._dum)
     free_indices = property(lambda self: self._free_indices)

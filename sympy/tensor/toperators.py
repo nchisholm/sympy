@@ -144,6 +144,18 @@ class PartialDerivative(TensExpr):
         return self
 
     @property
+    def free(self):
+        return self._free
+
+    @property
+    def dum(self):
+        return self._dum
+
+    @property
+    def indices(self):
+        return self._indices
+
+    @property
     def expr(self):
         return self.args[0]
 
@@ -306,7 +318,7 @@ def _eval_partial_derivative(expr, x):
     if isinstance(x, TensExpr):
         if isinstance(x, Tensor):
             if expr.args == ():
-                # expr and x cannot be the same b/c they have differnt types
+                # expr and x cannot be the same b/c they have different types
                 return S.Zero
             return _chaindiff(expr, x)
         raise ValueError("Cannot differentiate with respect to expression %s"
@@ -317,13 +329,23 @@ def _eval_partial_derivative(expr, x):
 def _chaindiff(expr, x):
     # Multivariate chain rule on `Expr`s that contain (zero-order) `TensExpr`s
 
-    # Using replace(TensExpr, lambda *args: Dummy()) doesn't work how we want
-    # because it replaces from bottom (leaves) to top of the expression tree---
-    # we want top to bottom.
-    (expr_dumb, dummies) = replace_topdown(
-        lambda e: Dummy() if isinstance(e, TensExpr) else None,
-        expr
-    )
+    # TODO: need to ensure dummy indices in `expr` are different than dummy
+    # indices in `x`.
+    #   + Know that `expr` has all self-contained dummy indices
+    #   + Might get a dummy collision from xs
+
+    def dummify_scalar_tensexpr(tex: TensExpr):
+        if isinstance(tex, TensExpr):
+            if tex.rank == 0:
+                return Dummy()
+            else:
+                raise ValueError("Non-scalar TensExpr nested in a plain Expr")
+        return None
+
+    # Replace `TensExprs` in expr with `Dummy` symbols, remembering which
+    # replacements we have made in `dummies`
+    expr_dumb, dummies = replace_topdown(dummify_scalar_tensexpr, expr)
+
 
     def expand_term(dummy_var, tens_expr):
         # [@F(..., uᵢ, ...)/@uᵢ]_{uᵢ = ϕᵢ(𝐱)} * @ϕᵢ(𝐱)/@xₖ
