@@ -1,3 +1,4 @@
+from functools import reduce
 from itertools import starmap
 from sympy import permutedims
 from sympy.core import Expr
@@ -125,7 +126,7 @@ class PartialDerivative(TensExpr):
             return expr
 
         args, indices, free, dum = cls._contract_indices_for_derivative(
-            S(expr), variables)
+            S(expr), variables, replace_indices=False)
 
         obj = TensExpr.__new__(cls, *args)
 
@@ -170,7 +171,8 @@ class PartialDerivative(TensExpr):
         return len(self._free)
 
     @classmethod
-    def _contract_indices_for_derivative(cls, expr, variables):
+    def _contract_indices_for_derivative(cls, expr, variables,
+                                         replace_indices=False):
         variables_opposite_valence = []
 
         for i in variables:
@@ -182,7 +184,8 @@ class PartialDerivative(TensExpr):
                 variables_opposite_valence.append(i)
 
         args, indices, free, dum = TensMul._tensMul_contract_indices(
-            [expr] + variables_opposite_valence, replace_indices=True)
+            [expr] + variables_opposite_valence,
+            replace_indices=replace_indices)
 
         for i in range(1, len(args)):
             args_i = args[i]
@@ -242,10 +245,13 @@ class PartialDerivative(TensExpr):
 
     def _perform_derivative(self):
         # Perform iterated differentiation WRT each of the variables
-        result = self.expr
-        for v in self.variables:
-            result = _eval_partial_derivative(result, v)
-        return result
+        #
+        # result = self.expr
+        # for v in self.variables:
+        #     result = _eval_partial_derivative(result, v)
+        # return result
+
+        return reduce(_eval_partial_derivative, reversed(self.variables), self.expr)
 
     def _eval_partial_derivative(self, v):
         v0, *vs = self.variables
@@ -356,3 +362,54 @@ def _chaindiff(expr, x):
     terms = starmap(expand_term, dummies.items())
 
     return TensAdd.fromiter(terms).doit(deep=False).xreplace(dummies)
+
+
+
+from collections import Counter, defaultdict
+from sympy.core.traversal import preorder_traversal
+
+# def _count_dum_pair_types(expr):
+#     """Count how many dummy pairs of each type there are in `expr`.
+#
+#     Returns a `defaultdict(int)` mapping each index type to the maximum number
+#     of occurances.
+#     """
+#
+#     counter = defaultdict(int)
+#
+#     for _expr in preorder_traversal(expr):
+#
+#         if not isinstance(_expr, TensExpr) or isinstance(_expr, TensAdd):
+#             continue
+#
+#         inds = _expr.get_indices()
+#
+#         c = Counter(inds[copos].tensor_index_type for (copos, _) in _expr.dum)
+#
+#         for (index_type, count) in c.items():
+#             count0 = counter[index_type]
+#             counter[index_type] = max(count, count0)
+#
+#     return counter
+
+
+def _count_dum_pair_types(expr, _counter=None):
+    """Count how many dummy pairs of each type there are in `expr`.
+
+    Returns a `defaultdict(int)` mapping each index type to the maximum number
+    of occurances.
+    """
+
+    _counter = defaultdict(int) if _counter == None else _counter
+
+    if isinstance(expr, TensExpr) and not isinstance(expr, TensAdd):
+        inds = expr.get_indices()
+        return Counter(inds[copos].tensor_index_type for (copos, _) in expr.dum)
+
+
+    for arg in expr.args:
+        c = _count_dum_pair_types(arg, _counter)
+        _counter.update({index_type: max(count, _counter[index_type])
+                         for (index_type, count) in c.items()})
+
+    return _counter

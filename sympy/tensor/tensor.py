@@ -4353,6 +4353,28 @@ def get_indices(t):
     return t.get_indices()
 
 
+def get_indices_deep(expr):
+    """Returns a list of all tensor indices in `expr`."""
+
+    if isinstance(expr, TensMul):
+        return get_indices_deep(expr.coeff) + expr._indices
+
+    if isinstance(expr, TensExpr):
+        return expr.get_indices()
+
+    if not isinstance(expr, Expr):
+        return []
+
+    # Recurse into `Expr`s
+
+    indices = []
+
+    for arg in expr.args:
+        indices.extend(i for i in get_indices_deep(arg) if i not in indices)
+
+    return indices
+
+
 def get_index_structure(t):
     if isinstance(t, TensExpr):
         return t._index_structure
