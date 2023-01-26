@@ -2437,6 +2437,13 @@ class TensAdd(TensExpr, AssocOp):
         if len(args) == 1:
             return args[0]
 
+        # Drop to a regular `Add` instance if there aren't any tensor arguments
+        if not any(isinstance(arg, TensExpr) for arg in args):
+            return Add(*args)
+
+        # now check that all addends have the same indices:
+        # cls._tensAdd_check(args)
+
         return Basic.__new__(cls, *args, **kw_args)
 
     @property
@@ -4373,6 +4380,8 @@ def get_indices_deep(expr):
         indices.extend(i for i in get_indices_deep(arg) if i not in indices)
 
     return indices
+
+
 
 
 def get_index_structure(t):

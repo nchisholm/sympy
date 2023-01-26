@@ -100,7 +100,7 @@ class PartialDerivative(TensExpr):
     [[cos(x), y**3/x], [0, 3*y**2*log(x)]]
     """
 
-    def __new__(cls, expr, *variables):
+    def __new__(cls, expr, *variables, evaluate=True):
 
         expr = _sympify(expr)
         variables = tuple(_sympify(v) for v in variables)
@@ -126,7 +126,7 @@ class PartialDerivative(TensExpr):
             return expr
 
         args, indices, free, dum = cls._contract_indices_for_derivative(
-            S(expr), variables, replace_indices=False)
+            S(expr), variables, replace_indices=evaluate)
 
         obj = TensExpr.__new__(cls, *args)
 
@@ -172,7 +172,7 @@ class PartialDerivative(TensExpr):
 
     @classmethod
     def _contract_indices_for_derivative(cls, expr, variables,
-                                         replace_indices=False):
+                                         replace_indices=True):
         variables_opposite_valence = []
 
         for i in variables:
@@ -240,8 +240,13 @@ class PartialDerivative(TensExpr):
 
         return result
 
-    def doit(self):
-        return self._perform_derivative()
+    def doit(self, deep=False):
+        # TODO: deep doit=true by default
+        # if deep:
+        #     obj = PartialDerivative(*(arg.doit(deep=True) for arg in self.args))
+        #     if not isinstance(obj, PartialDerivative):
+        #         return obj
+        return self._perform_derivative() #.doit()
 
     def _perform_derivative(self):
         # Perform iterated differentiation WRT each of the variables
@@ -258,7 +263,7 @@ class PartialDerivative(TensExpr):
         if v0 is v:
             dexpr_dv = self._eval_partial_derivative(v)
             return self.func(dexpr_dv, *vs)
-        raise NotImplementedError("Cannot assume Clairut's theorem holds")
+        raise NotImplementedError("No assumption of equality of mixed partial derivatives")
 
     def get_indices(self):
         return self._indices
@@ -322,6 +327,7 @@ def _eval_partial_derivative(expr, x):
     if isinstance(expr, TensExpr):
         return expr._eval_partial_derivative(x)
     if isinstance(x, TensExpr):
+        # expr is a non-`TensExpr` type
         if isinstance(x, Tensor):
             if expr.args == ():
                 # expr and x cannot be the same b/c they have different types
@@ -348,20 +354,36 @@ def _chaindiff(expr, x):
                 raise ValueError("Non-scalar TensExpr nested in a plain Expr")
         return None
 
-    # Replace `TensExprs` in expr with `Dummy` symbols, remembering which
-    # replacements we have made in `dummies`
-    expr_dumb, dummies = replace_topdown(dummify_scalar_tensexpr, expr)
+    expr_dumb, dumb_exprs = replace_topdown(dummify_scalar_tensexpr, expr)
+    # expr_dumb: `expr` with nested `TensExpr`s replaced with dummy symbols
+    # dumb_exprs: `dict` mapping each dummy symbol to the `TensExpr` it replaces
 
+    def expand_term(dummy_var, scalar_tensexpr):
 
-    def expand_term(dummy_var, tens_expr):
+        # FIXME: handle index naming collisions
+        # cdt = _count_dum_pair_types(scalar_tensexpr)
+        # new_inds = list(x.indices)
+        # dumset = scalar_tensexpr._get_dummy_indices_set()
+        # for ind in x.indices:
+        #     if ind in dumset:
+        #         ind_type = ind.tensor_index_type
+        #         new_ind_name = ind_type.dummy_name + "_" + str(cdt[ind_type])
+        #         new_ind = TensorIndex(new_ind_name, ind_type, ind.is_up)
+        #         new_inds.append(new_ind)
+        #         cdt[ind_type] += 1
+        #     else:
+        #         new_inds.append(ind)
+
+        # x1 = x.head(*new_inds)
+
         # [@F(..., uᵢ, ...)/@uᵢ]_{uᵢ = ϕᵢ(𝐱)} * @ϕᵢ(𝐱)/@xₖ
         deriv_dummy = _eval_partial_derivative(expr_dumb, dummy_var)
-        partial_deriv = tens_expr._eval_partial_derivative(x)
+        partial_deriv = scalar_tensexpr._eval_partial_derivative(x)
         return TensMul(deriv_dummy, partial_deriv).doit(deep=False)
 
-    terms = starmap(expand_term, dummies.items())
+    terms = tuple(starmap(expand_term, dumb_exprs.items()))
 
-    return TensAdd.fromiter(terms).doit(deep=False).xreplace(dummies)
+    return TensAdd.fromiter(terms).doit(deep=False).xreplace(dumb_exprs)
 
 
 
